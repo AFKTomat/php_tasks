@@ -1,0 +1,23 @@
+# Временные файлы
+*.tmp
+*.bak
+*.swp
+*~
+
+# Логи
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PHP
+vendor/
+composer.lock
