@@ -1,21 +1,18 @@
 <?php
+declare(strict_types=1);
+
 /**
- * ЗАДАНИЕ 7 (часть 1): Генератор изображения капчи
- *
- * Этот скрипт должен выводить PNG-картинку капчи (200×70):
- * — серый фон (imagecreatetruecolor + imagefill);
- * — 5–8 случайных линий (imageline) поверх фона;
- * — код капчи (5 цифр) из сессии — нарисовать через imagestring с разным размером (3, 4 или 5) и смещением по Y.
- *
- * В начале: ob_start(), session_start(). Код брать из $_SESSION['captcha_code'] (если пусто — сгенерировать и сохранить).
- * Перед выводом: ob_end_clean(), header('Content-Type: image/png'), imagepng($img).
- * Если GD не загружен — вывести заглушку (1×1 PNG) и exit.
+ * Задание 7: генерация PNG-капчи (GD + сессия).
+ * Фон noise.jpg, 5–6 символов, TTF 18–30 pt, шаг 40 pt, разные цвета (≥1 красный),
+ * поверх символов — точки и линии разной толщины/цвета/длины.
  */
 ob_start();
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
+
+require_once __DIR__ . '/captcha_lib.php';
 
 if (!extension_loaded('gd')) {
     ob_end_clean();
@@ -27,35 +24,119 @@ if (!extension_loaded('gd')) {
 
 $code = $_SESSION['captcha_code'] ?? '';
 if ($code === '') {
-    $code = (string) random_int(10000, 99999);
+    $code = captcha_generate_string(captcha_random_length());
     $_SESSION['captcha_code'] = $code;
 }
 
-$w = 200;
-$h = 70;
-$img = imagecreatetruecolor($w, $h);
-$bg = imagecolorallocate($img, 232, 232, 238);
-imagefill($img, 0, 0, $bg);
+$len = strlen($code);
+$spacing = 40;
+$marginX = 22;
+$imgW = (int) ($marginX * 2 + max(1, $len - 1) * $spacing + 36);
+$imgH = 100;
 
-$lineColor1 = imagecolorallocate($img, 120, 120, 130);
-$lineColor2 = imagecolorallocate($img, 100, 100, 110);
-for ($i = 0; $i < 6; $i++) {
-    imageline($img, random_int(0, $w), random_int(0, $h), random_int(0, $w), random_int(0, $h), $i % 2 ? $lineColor1 : $lineColor2);
+$noisePath = __DIR__ . '/../noise.jpg';
+$img = imagecreatetruecolor($imgW, $imgH);
+if ($img === false) {
+    ob_end_clean();
+    header('Content-Type: image/png');
+    header('Cache-Control: no-store');
+    exit;
+}
+imagealphablending($img, true);
+
+if (is_readable($noisePath)) {
+    $src = @imagecreatefromjpeg($noisePath);
+    if ($src !== false) {
+        imagecopyresampled($img, $src, 0, 0, 0, 0, $imgW, $imgH, imagesx($src), imagesy($src));
+        imagedestroy($src);
+    } else {
+        $bg = imagecolorallocate($img, 220, 220, 228);
+        imagefill($img, 0, 0, $bg);
+    }
+} else {
+    $bg = imagecolorallocate($img, 220, 220, 228);
+    imagefill($img, 0, 0, $bg);
 }
 
-$textColor = imagecolorallocate($img, 40, 40, 50);
-$len = strlen($code);
-$sizes = [3, 4, 5];
-for ($i = 0; $i < $len; $i++) {
-    $char = $code[$i];
-    $size = $sizes[array_rand($sizes)];
-    $x = 15 + $i * 36;
-    $y = 18 + random_int(0, 18);
-    imagestring($img, $size, $x, $y, $char, $textColor);
+$font = captcha_resolve_font();
+$redIndex = random_int(0, $len - 1);
+
+if ($font !== null && function_exists('imagettftext')) {
+    for ($i = 0; $i < $len; $i++) {
+        $char = $code[$i];
+        $size = random_int(18, 30);
+        $angle = (float) random_int(-14, 14);
+        if ($i === $redIndex) {
+            $r = random_int(180, 255);
+            $g = random_int(0, 70);
+            $b = random_int(0, 70);
+        } else {
+            $r = random_int(20, 120);
+            $g = random_int(40, 140);
+            $b = random_int(20, 120);
+        }
+        $col = imagecolorallocate($img, $r, $g, $b);
+        $x = $marginX + $i * $spacing + random_int(-4, 4);
+        $bbox = imagettfbbox($size, $angle, $font, $char);
+        if ($bbox === false) {
+            continue;
+        }
+        $minY = min($bbox[1], $bbox[3], $bbox[5], $bbox[7]);
+        $maxY = max($bbox[1], $bbox[3], $bbox[5], $bbox[7]);
+        $charH = $maxY - $minY;
+        $y = (int) (($imgH - $charH) / 2 - $minY + random_int(-5, 5));
+        imagettftext($img, $size, $angle, $x, $y, $col, $font, $char);
+    }
+} else {
+    for ($i = 0; $i < $len; $i++) {
+        $char = $code[$i];
+        $size = random_int(3, 5);
+        if ($i === $redIndex) {
+            $col = imagecolorallocate($img, 220, 30, 30);
+        } else {
+            $col = imagecolorallocate($img, random_int(20, 90), random_int(40, 100), random_int(30, 90));
+        }
+        $x = 12 + $i * 32;
+        $y = 18 + random_int(0, 22);
+        imagestring($img, $size, $x, $y, $char, $col);
+    }
+}
+
+$lineCount = random_int(10, 18);
+for ($n = 0; $n < $lineCount; $n++) {
+    imagesetthickness($img, random_int(1, 3));
+    $lc = imagecolorallocatealpha(
+        $img,
+        random_int(40, 200),
+        random_int(40, 200),
+        random_int(40, 200),
+        random_int(60, 110)
+    );
+    imageline(
+        $img,
+        random_int(0, $imgW),
+        random_int(0, $imgH),
+        random_int(0, $imgW),
+        random_int(0, $imgH),
+        $lc
+    );
+}
+imagesetthickness($img, 1);
+
+$dotCount = random_int(80, 160);
+for ($n = 0; $n < $dotCount; $n++) {
+    $dc = imagecolorallocatealpha(
+        $img,
+        random_int(0, 255),
+        random_int(0, 255),
+        random_int(0, 255),
+        random_int(40, 100)
+    );
+    imagesetpixel($img, random_int(0, $imgW - 1), random_int(0, $imgH - 1), $dc);
 }
 
 ob_end_clean();
 header('Content-Type: image/png');
-header('Cache-Control: no-store, no-cache');
+header('Cache-Control: no-store, no-cache, must-revalidate');
 imagepng($img);
 imagedestroy($img);
